@@ -2,18 +2,18 @@ import requests
 import time
 import json
 from web3 import Web3
+from web3.middleware import geth_poa_middleware
 
-PRIVATE_KEY = "691b7337ce755a4c1b34d68753889f98519ac051a5ead9c67dfac50c31f03e84"
+PRIVATE_KEY = "ed3056508c7bfa9299cca3ea2f2912ec1ef81c90889603655bd3f04c5c83d154"
 WETH = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'
 WBNB = '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c'
 WMATIC = '0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270'
 
-web3 = Web3(Web3.HTTPProvider(endpoint_uri=rpc))
-web3.eth.account.enable_unaudited_hdwallet_features()
+RPCETH = 'https://eth.llamarpc.com'
+RPCBNB = 'https://bsc-dataseed.bnbchain.org'
+RPCMATIC = 'https://polygon.llamarpc.com'
 
-account = web3.eth.account.from_key(PRIVATE_KEY)
-
-
+woofiABI = json.load(open('abi/woofi.json'))
 
 def log(message):
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}] {message}")
@@ -21,6 +21,15 @@ def log(message):
 
 def swap(src_network, dst_network, src_token, dst_token, src_amount, slippage):
     log("Starting WooSwap")
+
+    rpc = RPCETH
+    if src_network == 'ethereum':
+        rpc = RPCETH
+    if src_network == 'bsc':
+        rpc = RPCBNB
+    if src_network == 'polygon':
+        rpc = RPCMATIC
+
     url_src_token = src_token
     if src_network == 'ethereum' and src_token.lower() == '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee':
         url_src_token = WETH
@@ -29,18 +38,59 @@ def swap(src_network, dst_network, src_token, dst_token, src_amount, slippage):
     if src_network == 'polygon' and src_token.lower() == '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee':
         url_src_token = WMATIC
 
-    url = "https://fi-api.woo.org/woofi_swap?from_token=0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c&to_token=0x55d398326f99059fF775485246999027B3197955&from_amount=5000000000000000&network=bsc&slippage=1"
+    #url = f"https://fi-api.woo.org/woofi_swap?from_token=0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c&to_token=0x55d398326f99059fF775485246999027B3197955&from_amount=5000000000000000&network=bsc&slippage=1"
+    url = f"https://fi-api.woo.org/woofi_swap?from_token={url_src_token}&to_token={dst_token}&from_amount={src_amount}&network={src_network}&slippage={slippage}"
+
 
     response = requests.request("GET", url)
-    print(response.json())
+    json = response.json()
+    print(json['data'])
 
     #src_token
-    #dst_network
+    #dst_token
     #src_amount
     #to_amount
     #account.address
     #account.address
 
+    to_amount = json['data']['to_amount']
+
+    web3 = Web3(Web3.HTTPProvider(endpoint_uri=rpc))
+    web3.middleware_onion.inject(geth_poa_middleware, layer=0)
+    web3.eth.account.enable_unaudited_hdwallet_features()
+
+    account = web3.eth.account.from_key(PRIVATE_KEY)
+    #account = web3.eth.account.from_mnemonic("friend brain average machine ability orbit general benefit zoo hold old best")
+    print("accountAddress", account.address)
+    #print("accountPK", Web3.to_hex(account.key))
+    #0x3c53ea168c385af2Cba3F2E8942E9EceA25c17f9
+
+    woofi_contract_address = '0x4c4AF8DBc524681930a27b2F1Af5bcC8062E6fB7'
+    woofi_contract = web3.eth.contract(address=woofi_contract_address, abi=woofiABI)
+
+    tx_args = woofi_contract.encodeABI(fn_name='swap', args=(src_token, dst_token, int(src_amount), int(to_amount), account.address, account.address))
+
+    print(tx_args)
+
+    last_block = web3.eth.get_block('latest')
+    base_fee = last_block['baseFeePerGas']
+
+    tx_params = {
+        'chainId': web3.eth.chain_id,
+        'maxPriorityFeePerGas': web3.eth.max_priority_fee,
+        'maxFeePerGas': base_fee + web3.eth.max_priority_fee,
+        'nonce': web3.eth.get_transaction_count(account.address),
+        'from': account.address,
+        'to': woofi_contract.address,
+        'data': tx_args,
+        'value': int(src_amount),
+    }
+    tx_params['gas'] = int(web3.eth.estimate_gas(tx_params)*1.2)
+
+    sign = web3.eth.account.sign_transaction(tx_params, PRIVATE_KEY)
+    tx = web3.eth.send_raw_transaction(sign.rawTransaction)
+    tx_data = web3.eth.wait_for_transaction_receipt(tx, timeout=200)
+    print(tx_data)
 
 def cross(src_network, dst_network, src_token, dst_token, src_amount, slippage):
     log("Starting CrossSwap")
@@ -70,10 +120,7 @@ def cross(src_network, dst_network, src_token, dst_token, src_amount, slippage):
     #dst_1inch['data']
 
 
-def test():
-
 def main():
-    test()
     src_network = input("Сеть источника: ")
     dst_network = input("Сеть получателя: ")
     src_token = input("Токен источника: ")
